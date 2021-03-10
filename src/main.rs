@@ -1,5 +1,6 @@
 extern crate custom_error;
 
+mod http;
 mod net;
 
 use clap::Clap;
