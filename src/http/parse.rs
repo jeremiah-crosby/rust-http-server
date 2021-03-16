@@ -101,25 +101,22 @@ impl Lexer {
     fn lex_header_value(&mut self) -> (Token, Option<LexState>) {
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
-                if c == '\r' {
-                    return self.lex_end_header_value();
-                }
-
-                if c.is_whitespace() {
+                if c != '\r' && c.is_whitespace() {
                     self.pos += 1;
                     return self.lex_header_value();
                 }
 
                 lazy_static! {
-                    static ref FIELD_VALUE_RE: Regex = Regex::new(r"^[^\r]+").unwrap();
+                    static ref FIELD_VALUE_RE: Regex = Regex::new(r"^[^\r]+\r\n").unwrap();
                 }
 
                 if let Some(mat) = (FIELD_VALUE_RE).find(&self.buffer[self.pos..]) {
                     let ret = (
                         Token::HeaderValue(
-                            self.buffer[self.pos + mat.start()..self.pos + mat.end()].to_string(),
+                            self.buffer[self.pos + mat.start()..self.pos + mat.end() - 2]
+                                .to_string(),
                         ),
-                        None,
+                        Some(LexState::HeaderName),
                     );
                     self.pos += mat.end();
                     return ret;
@@ -128,18 +125,6 @@ impl Lexer {
             }
             None => (Token::Error, None),
         }
-    }
-
-    fn lex_end_header_value(&mut self) -> (Token, Option<LexState>) {
-        lazy_static! {
-            static ref CRLF_RE: Regex = Regex::new(CRLF_REGEX_STR).unwrap();
-        }
-        if let Some(mat) = (CRLF_RE).find(&self.buffer[self.pos..]) {
-            self.pos += mat.end();
-            return (Token::Crlf, Some(LexState::HeaderName));
-        }
-
-        (Token::Error, None)
     }
 
     fn lex_end_headers(&mut self) -> (Token, Option<LexState>) {
@@ -242,8 +227,8 @@ custom_error! {pub ParseError
 
 pub fn parse_from_reader(reader: &mut Read) -> Result<HttpRequest, ParseError> {
     let mut lexer = Lexer::new(reader);
-    let request = parse_request_line(&mut lexer)?;
-    parse_header_lines(&mut lexer);
+    let mut request = parse_request_line(&mut lexer)?;
+    parse_header_lines(&mut lexer, &mut request);
 
     Ok(request)
 }
@@ -258,10 +243,7 @@ where
                 parse_protocol(token_iter)?;
                 parse_crlf(token_iter)?;
 
-                return Ok(HttpRequest {
-                    method: method.to_string(),
-                    path: path.to_string(),
-                });
+                return Ok(HttpRequest::new(method.as_str(), path.as_str()));
             }
 
             Err(ParseError::Unexpected {
@@ -275,13 +257,30 @@ where
     }
 }
 
-fn parse_header_lines<I>(token_iter: &mut I) -> Result<(), ParseError>
+fn parse_header_lines<I>(token_iter: &mut I, request: &mut HttpRequest) -> Result<(), ParseError>
 where
     I: Iterator<Item = Token>,
 {
-    match token_iter.next() {
-        Some(Token::Crlf) => Ok(()),
-        _ => parse_header_lines(token_iter),
+    loop {
+        match token_iter.next() {
+            Some(Token::Crlf) => {
+                return Ok(());
+            }
+            Some(Token::HeaderName(header_name)) => {
+                if let Some(Token::HeaderValue(header_val)) = token_iter.next() {
+                    request.set_header(header_name.as_str(), header_val.as_str());
+                    return parse_header_lines(token_iter, request);
+                }
+                return Err(ParseError::Unexpected {
+                    msg: "Expected header value".to_string(),
+                });
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    msg: "Expected header".to_string(),
+                });
+            }
+        }
     }
 }
 
@@ -330,7 +329,6 @@ mod tests {
             lexer.next()
         );
         assert_eq!(Some(Token::HeaderValue("value".to_string())), lexer.next());
-        assert_eq!(Some(Token::Crlf), lexer.next());
 
         assert_eq!(
             Some(Token::HeaderName("Another-Header".to_string())),
@@ -341,7 +339,6 @@ mod tests {
             lexer.next()
         );
         assert_eq!(Some(Token::Crlf), lexer.next());
-        assert_eq!(Some(Token::Crlf), lexer.next());
 
         assert_eq!(None, lexer.next());
     }
@@ -349,11 +346,18 @@ mod tests {
     #[test]
     fn parses_simple_valid_GET_request() {
         let mut input = "GET / HTTP/1.1\r\n\
+        Header-1: value1\r\n\
+        Header-2: value2\r\n\
+        Header-3: value3\r\n\
         \r\n";
 
         let request = parse_from_reader(&mut input.as_bytes()).unwrap();
 
         assert_eq!("GET", request.method);
         assert_eq!("/", request.path);
+
+        assert_eq!(Some(&"value1".to_string()), request.header("Header-1"));
+        assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
+        assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
     }
 }
