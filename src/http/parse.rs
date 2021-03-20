@@ -11,7 +11,7 @@ custom_error! {pub ParseError
 pub fn parse_from_reader(reader: &mut dyn Read) -> Result<HttpRequest, ParseError> {
     let mut lexer = Lexer::new(reader);
     let mut request = parse_request_line(&mut lexer)?;
-    parse_header_lines(&mut lexer, &mut request);
+    parse_header_lines(&mut lexer, &mut request)?;
 
     Ok(request)
 }

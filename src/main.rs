@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 extern crate custom_error;
 
 mod http;
@@ -19,6 +21,7 @@ struct Opts {
     port: u32,
 }
 
+#[allow(unreachable_code)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
 

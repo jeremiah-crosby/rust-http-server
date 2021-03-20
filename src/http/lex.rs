@@ -1,6 +1,5 @@
 use lazy_static::lazy_static;
 use std::io::Read;
-use std::slice::Iter;
 
 const TOKEN_REGEX_STR: &str = r"^[!\#\$%\&'\*+-\.\^_`\|~a-zA-Z0-9]+";
 const CRLF_REGEX_STR: &str = r"^\r\n";
@@ -223,7 +222,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lexes_valid_GET_request_line() {
+    fn lexes_valid_get_request_line() {
         let input = "GET / HTTP/1.1\r\nHeader-1: value\r\nAnother-Header: different value\r\n\r\n";
         let mut lexer = Lexer::new(&mut input.as_bytes());
 
