@@ -1,7 +1,8 @@
 use super::lex::{Lexer, Token};
-use super::HttpRequest;
+use super::{HttpMethod, HttpRequest, HttpRequestBuilder};
 use custom_error::custom_error;
 use std::io::Read;
+use std::str::FromStr;
 
 custom_error! {pub ParseError
     Unexpected{msg: String} = "Unexpected token error: {msg}",
@@ -10,13 +11,14 @@ custom_error! {pub ParseError
 
 pub fn parse_from_reader(reader: &mut dyn Read) -> Result<HttpRequest, ParseError> {
     let mut lexer = Lexer::new(reader);
-    let mut request = parse_request_line(&mut lexer)?;
-    parse_header_lines(&mut lexer, &mut request)?;
+    let mut request_builder = parse_request_line(&mut lexer)?;
+    let headers = parse_header_lines(&mut lexer, &mut request_builder)?;
+    parse_body(&mut lexer, &mut request_builder);
 
-    Ok(request)
+    Ok(request_builder.build())
 }
 
-fn parse_request_line<I>(token_iter: &mut I) -> Result<HttpRequest, ParseError>
+fn parse_request_line<I>(token_iter: &mut I) -> Result<HttpRequestBuilder, ParseError>
 where
     I: Iterator<Item = Token>,
 {
@@ -26,7 +28,11 @@ where
                 parse_protocol(token_iter)?;
                 parse_crlf(token_iter)?;
 
-                return Ok(HttpRequest::new(method.as_str(), path.as_str()));
+                let mut builder = HttpRequestBuilder::new();
+                builder.with_method(method);
+                builder.with_path(&path);
+
+                return Ok(builder);
             }
 
             Err(ParseError::Unexpected {
@@ -40,7 +46,10 @@ where
     }
 }
 
-fn parse_header_lines<I>(token_iter: &mut I, request: &mut HttpRequest) -> Result<(), ParseError>
+fn parse_header_lines<I>(
+    token_iter: &mut I,
+    request_builder: &mut HttpRequestBuilder,
+) -> Result<(), ParseError>
 where
     I: Iterator<Item = Token>,
 {
@@ -51,8 +60,8 @@ where
             }
             Some(Token::HeaderName(header_name)) => {
                 if let Some(Token::HeaderValue(header_val)) = token_iter.next() {
-                    request.set_header(header_name.as_str(), header_val.as_str());
-                    return parse_header_lines(token_iter, request);
+                    request_builder.with_header(header_name.as_str(), header_val.as_str());
+                    return parse_header_lines(token_iter, request_builder);
                 }
                 return Err(ParseError::Unexpected {
                     msg: "Expected header value".to_string(),
@@ -64,6 +73,24 @@ where
                 });
             }
         }
+    }
+}
+
+fn parse_body<I>(
+    token_iter: &mut I,
+    request_builder: &mut HttpRequestBuilder,
+) -> Result<(), ParseError>
+where
+    I: Iterator<Item = Token>,
+{
+    match token_iter.next() {
+        Some(Token::Body(ref content)) => {
+            request_builder.with_body(content);
+            Ok(())
+        }
+        _ => Err(ParseError::Unexpected {
+            msg: "Expected body".to_string(),
+        }),
     }
 }
 
@@ -98,8 +125,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_simple_valid_GET_request() {
-        let mut input = "GET / HTTP/1.1\r\n\
+    fn parses_simple_valid_get_request() {
+        let input = "GET / HTTP/1.1\r\n\
         Header-1: value1\r\n\
         Header-2: value2\r\n\
         Header-3: value3\r\n\
@@ -107,11 +134,31 @@ mod tests {
 
         let request = parse_from_reader(&mut input.as_bytes()).unwrap();
 
-        assert_eq!("GET", request.method);
+        assert_eq!(HttpMethod::from_str("GET").unwrap(), request.method);
         assert_eq!("/", request.path);
 
         assert_eq!(Some(&"value1".to_string()), request.header("Header-1"));
         assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
         assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
+    }
+
+    #[test]
+    fn parses_simple_valid_post_request_with_body() {
+        let mut input = "POST / HTTP/1.1\r\n\
+        Header-1: value1\r\n\
+        Header-2: value2\r\n\
+        Header-3: value3\r\n\
+        \r\nThis is the body";
+
+        let request = parse_from_reader(&mut input.as_bytes()).unwrap();
+
+        assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
+        assert_eq!("/", request.path);
+
+        assert_eq!(Some(&"value1".to_string()), request.header("Header-1"));
+        assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
+        assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
+
+        assert_eq!("This is the body", request.body_as_string());
     }
 }

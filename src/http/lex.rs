@@ -1,5 +1,10 @@
 use lazy_static::lazy_static;
 use std::io::Read;
+use std::str::FromStr;
+
+use super::HttpMethod;
+
+type LexResult = (Token, Option<LexState>);
 
 const TOKEN_REGEX_STR: &str = r"^[!\#\$%\&'\*+-\.\^_`\|~a-zA-Z0-9]+";
 const CRLF_REGEX_STR: &str = r"^\r\n";
@@ -7,7 +12,7 @@ use regex::Regex;
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    Method(String),
+    Method(HttpMethod),
     Path(String),
     Protocol,
     HeaderName(String),
@@ -42,7 +47,7 @@ impl Iterator for Lexer {
             LexState::RequestLine => self.lex_request_line(),
             LexState::HeaderName => self.lex_header_name(),
             LexState::HeaderValue => self.lex_header_value(),
-            LexState::Body => (Token::Error, None),
+            LexState::Body => self.lex_body(),
         };
 
         if let Some(state) = new_state {
@@ -65,7 +70,14 @@ impl Lexer {
         }
     }
 
-    fn lex_header_name(&mut self) -> (Token, Option<LexState>) {
+    fn lex_body(&mut self) -> LexResult {
+        (
+            Token::Body(self.buffer[self.pos..].as_bytes().to_vec()),
+            None,
+        )
+    }
+
+    fn lex_header_name(&mut self) -> LexResult {
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c == '\r' {
@@ -95,7 +107,7 @@ impl Lexer {
         }
     }
 
-    fn lex_header_value(&mut self) -> (Token, Option<LexState>) {
+    fn lex_header_value(&mut self) -> LexResult {
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c != '\r' && c.is_whitespace() {
@@ -124,7 +136,7 @@ impl Lexer {
         }
     }
 
-    fn lex_end_headers(&mut self) -> (Token, Option<LexState>) {
+    fn lex_end_headers(&mut self) -> LexResult {
         lazy_static! {
             static ref CRLF_RE: Regex = Regex::new(CRLF_REGEX_STR).unwrap();
         }
@@ -136,7 +148,7 @@ impl Lexer {
         (Token::Error, None)
     }
 
-    fn lex_request_line(&mut self) -> (Token, Option<LexState>) {
+    fn lex_request_line(&mut self) -> LexResult {
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c == '\r' {
@@ -162,7 +174,7 @@ impl Lexer {
         }
     }
 
-    fn lex_end_request_line(&mut self) -> (Token, Option<LexState>) {
+    fn lex_end_request_line(&mut self) -> LexResult {
         lazy_static! {
             static ref CRLF_RE: Regex = Regex::new(CRLF_REGEX_STR).unwrap();
         }
@@ -174,7 +186,7 @@ impl Lexer {
         (Token::Error, None)
     }
 
-    fn lex_path(&mut self) -> (Token, Option<LexState>) {
+    fn lex_path(&mut self) -> LexResult {
         lazy_static! {
             static ref PATH_RE: Regex = Regex::new(r"^[a-z0-9\-._~%!$&'()*+,;=:@/]+").unwrap();
         }
@@ -190,7 +202,7 @@ impl Lexer {
         (Token::Error, None)
     }
 
-    fn lex_method_or_protocol(&mut self) -> (Token, Option<LexState>) {
+    fn lex_method_or_protocol(&mut self) -> LexResult {
         lazy_static! {
             static ref METHOD_RE: Regex =
                 Regex::new(r"^GET|POST|PUT|PATCH|HEAD|OPTIONS|TRACE").unwrap();
@@ -199,7 +211,10 @@ impl Lexer {
         if let Some(mat) = (METHOD_RE).find(&self.buffer[self.pos..]) {
             let ret = (
                 Token::Method(
-                    self.buffer[self.pos + mat.start()..self.pos + mat.end()].to_string(),
+                    HttpMethod::from_str(
+                        &self.buffer[self.pos + mat.start()..self.pos + mat.end()],
+                    )
+                    .unwrap(),
                 ),
                 None,
             );
@@ -226,7 +241,10 @@ mod tests {
         let input = "GET / HTTP/1.1\r\nHeader-1: value\r\nAnother-Header: different value\r\n\r\n";
         let mut lexer = Lexer::new(&mut input.as_bytes());
 
-        assert_eq!(Some(Token::Method("GET".to_string())), lexer.next());
+        assert_eq!(
+            Some(Token::Method(HttpMethod::from_str("GET").unwrap())),
+            lexer.next()
+        );
         assert_eq!(Some(Token::Path("/".to_string())), lexer.next());
         assert_eq!(Some(Token::Protocol), lexer.next());
         assert_eq!(Some(Token::Crlf), lexer.next());
