@@ -1,3 +1,4 @@
+mod lex;
 mod parse;
 
 use std::collections::HashMap;
