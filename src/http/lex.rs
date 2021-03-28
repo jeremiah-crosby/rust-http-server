@@ -1,4 +1,5 @@
 use lazy_static::lazy_static;
+use log::debug;
 use std::io::Read;
 use std::str::FromStr;
 
@@ -71,6 +72,7 @@ impl Lexer {
     }
 
     fn lex_body(&mut self) -> LexResult {
+        debug!("Lexing body");
         (
             Token::Body(self.buffer[self.pos..].as_bytes().to_vec()),
             None,
@@ -78,6 +80,7 @@ impl Lexer {
     }
 
     fn lex_header_name(&mut self) -> LexResult {
+        debug!("Lexing header name");
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c == '\r' {
@@ -108,6 +111,7 @@ impl Lexer {
     }
 
     fn lex_header_value(&mut self) -> LexResult {
+        debug!("Lexing header value");
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c != '\r' && c.is_whitespace() {
@@ -137,6 +141,7 @@ impl Lexer {
     }
 
     fn lex_end_headers(&mut self) -> LexResult {
+        debug!("Lexing end of headers");
         lazy_static! {
             static ref CRLF_RE: Regex = Regex::new(CRLF_REGEX_STR).unwrap();
         }
@@ -149,6 +154,7 @@ impl Lexer {
     }
 
     fn lex_request_line(&mut self) -> LexResult {
+        debug!("Lexing request line");
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c == '\r' {
@@ -175,6 +181,7 @@ impl Lexer {
     }
 
     fn lex_end_request_line(&mut self) -> LexResult {
+        debug!("Lexing end of request line");
         lazy_static! {
             static ref CRLF_RE: Regex = Regex::new(CRLF_REGEX_STR).unwrap();
         }
@@ -187,6 +194,7 @@ impl Lexer {
     }
 
     fn lex_path(&mut self) -> LexResult {
+        debug!("Lexing request path");
         lazy_static! {
             static ref PATH_RE: Regex = Regex::new(r"^[a-z0-9\-._~%!$&'()*+,;=:@/]+").unwrap();
         }
@@ -209,6 +217,8 @@ impl Lexer {
             static ref PROTOCOL_RE: Regex = Regex::new(r"^HTTP/1\.1").unwrap();
         }
         if let Some(mat) = (METHOD_RE).find(&self.buffer[self.pos..]) {
+            debug!("Lexing request method");
+
             let ret = (
                 Token::Method(
                     HttpMethod::from_str(
@@ -223,6 +233,8 @@ impl Lexer {
         }
 
         if let Some(mat) = (PROTOCOL_RE).find(&self.buffer[self.pos..]) {
+            debug!("Lexing request protocol and version");
+
             let ret = (Token::Protocol, None);
             self.pos += mat.end();
             return ret;
