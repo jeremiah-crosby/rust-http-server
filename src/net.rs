@@ -1,6 +1,7 @@
 use custom_error::custom_error;
+use log::debug;
 use std::io::Read;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 
 custom_error! {pub NetError
     NotOpened = "TCP stream used before opened",
@@ -9,7 +10,7 @@ custom_error! {pub NetError
 
 pub trait RequestListener {
     fn open(&mut self) -> Result<(), NetError>;
-    fn accept_request(&self) -> Result<Box<dyn Read>, NetError>;
+    fn accept_request(&self) -> Result<TcpStream, NetError>;
 }
 
 pub struct TcpRequestListener {
@@ -39,10 +40,13 @@ impl RequestListener for TcpRequestListener {
         }
     }
 
-    fn accept_request(&self) -> Result<Box<dyn Read>, NetError> {
+    fn accept_request(&self) -> Result<TcpStream, NetError> {
         if let Some(ref listener) = self.listener {
             match listener.accept() {
-                Ok((stream, _)) => Ok(Box::new(stream)),
+                Ok((stream, _)) => {
+                    debug!("Connection established");
+                    Ok(stream)
+                }
                 Err(e) => Err(NetError::IoError { source: e }),
             }
         } else {

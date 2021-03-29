@@ -60,12 +60,13 @@ impl Iterator for Lexer {
 }
 impl Lexer {
     pub fn new(reader: &mut dyn Read) -> Self {
-        let mut buffer = String::new();
-        reader
-            .read_to_string(&mut buffer)
-            .expect("Did not receive UTF data for lexing");
+        let mut buffer = [0; 1024];
+
+        reader.read(&mut buffer).unwrap();
+        let source = String::from_utf8_lossy(&buffer[..]);
+
         Lexer {
-            buffer,
+            buffer: source.to_string(),
             state: LexState::RequestLine,
             pos: 0,
         }
@@ -73,10 +74,11 @@ impl Lexer {
 
     fn lex_body(&mut self) -> LexResult {
         debug!("Lexing body");
-        (
-            Token::Body(self.buffer[self.pos..].as_bytes().to_vec()),
-            None,
-        )
+        let body_vec = self.buffer[self.pos..].as_bytes().to_vec();
+        let body_len = body_vec.len();
+        let body = (Token::Body(body_vec), None);
+        self.pos += body_len;
+        body
     }
 
     fn lex_header_name(&mut self) -> LexResult {
@@ -276,6 +278,44 @@ mod tests {
             lexer.next()
         );
         assert_eq!(Some(Token::Crlf), lexer.next());
+
+        lexer.next();
+        assert_eq!(None, lexer.next());
+    }
+
+    #[test]
+    fn lexes_path_with_period() {
+        let input = "GET /static/test.txt HTTP/1.1\r\nHeader-1: value\r\nAnother-Header: different value\r\n\r\n";
+        let mut lexer = Lexer::new(&mut input.as_bytes());
+
+        assert_eq!(
+            Some(Token::Method(HttpMethod::from_str("GET").unwrap())),
+            lexer.next()
+        );
+        assert_eq!(
+            Some(Token::Path("/static/test.txt".to_string())),
+            lexer.next()
+        );
+        assert_eq!(Some(Token::Protocol), lexer.next());
+        assert_eq!(Some(Token::Crlf), lexer.next());
+
+        assert_eq!(
+            Some(Token::HeaderName("Header-1".to_string())),
+            lexer.next()
+        );
+        assert_eq!(Some(Token::HeaderValue("value".to_string())), lexer.next());
+
+        assert_eq!(
+            Some(Token::HeaderName("Another-Header".to_string())),
+            lexer.next()
+        );
+        assert_eq!(
+            Some(Token::HeaderValue("different value".to_string())),
+            lexer.next()
+        );
+        assert_eq!(Some(Token::Crlf), lexer.next());
+
+        lexer.next();
 
         assert_eq!(None, lexer.next());
     }

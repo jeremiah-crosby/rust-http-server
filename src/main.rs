@@ -6,7 +6,12 @@ mod http;
 mod net;
 
 use clap::Clap;
+use flexi_logger::Logger;
+use log::{debug, info};
 use net::{RequestListener, TcpRequestListener};
+use std::{fs::read_to_string, io::Write, net::Shutdown, path::Path};
+
+use http::{parse_from_reader, HttpMethod, HttpRequest};
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
@@ -23,19 +28,40 @@ struct Opts {
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Logger::with_env_or_str("debug").start()?;
+
     let opts: Opts = Opts::parse();
 
-    println!("Binding to {}:{}", &opts.bind_address, opts.port);
+    info!("Binding to {}:{}", &opts.bind_address, opts.port);
     let mut listener = TcpRequestListener::new(&opts.bind_address, opts.port);
     listener.open()?;
 
     loop {
         if let Ok(mut stream) = listener.accept_request() {
-            let mut result: String = String::new();
-            stream.read_to_string(&mut result)?;
-            println!("{:?}", &mut result);
+            let request = parse_from_reader(&mut stream).unwrap();
+            debug!("Got request {:?}", &request);
+            let response = handle_request(&request);
+            debug!("Sending response {}", &response);
+            stream.write(&response.as_bytes())?;
+            stream.shutdown(Shutdown::Both).expect("Could not shutdown");
         }
     }
 
     Ok(())
+}
+
+fn handle_request(request: &HttpRequest) -> String {
+    if request.method == HttpMethod::GET && request.path.starts_with("/static") {
+        debug!("Handling static request");
+        let stripped_path = Path::new(&request.path).strip_prefix("/static").unwrap();
+        let final_path = Path::new("./files").join(&stripped_path);
+        let content = read_to_string(final_path).unwrap();
+        return format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            content.len(),
+            content
+        );
+    }
+
+    "HTTP/1.1 200 OK\r\n\r\n".to_string()
 }
