@@ -1,6 +1,8 @@
 mod lex;
 mod parse;
 
+pub use self::parse::parse_from_reader;
+
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -31,6 +33,7 @@ impl FromStr for HttpMethod {
     }
 }
 
+#[derive(Debug)]
 struct HttpBody {
     content: Vec<u8>,
 }
@@ -52,6 +55,7 @@ impl HttpBody {
     }
 }
 
+#[derive(Debug)]
 pub struct HttpRequest {
     pub method: HttpMethod,
     pub path: String,

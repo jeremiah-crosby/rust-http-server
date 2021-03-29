@@ -12,8 +12,8 @@ custom_error! {pub ParseError
 pub fn parse_from_reader(reader: &mut dyn Read) -> Result<HttpRequest, ParseError> {
     let mut lexer = Lexer::new(reader);
     let mut request_builder = parse_request_line(&mut lexer)?;
-    let headers = parse_header_lines(&mut lexer, &mut request_builder)?;
-    parse_body(&mut lexer, &mut request_builder);
+    parse_header_lines(&mut lexer, &mut request_builder)?;
+    parse_body(&mut lexer, &mut request_builder)?;
 
     Ok(request_builder.build())
 }
@@ -88,9 +88,10 @@ where
             request_builder.with_body(content);
             Ok(())
         }
-        _ => Err(ParseError::Unexpected {
-            msg: "Expected body".to_string(),
+        Some(other) => Err(ParseError::Unexpected {
+            msg: format!("Expected body, got {:?}", other),
         }),
+        None => Ok(()),
     }
 }
 
@@ -140,25 +141,5 @@ mod tests {
         assert_eq!(Some(&"value1".to_string()), request.header("Header-1"));
         assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
         assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
-    }
-
-    #[test]
-    fn parses_simple_valid_post_request_with_body() {
-        let mut input = "POST / HTTP/1.1\r\n\
-        Header-1: value1\r\n\
-        Header-2: value2\r\n\
-        Header-3: value3\r\n\
-        \r\nThis is the body";
-
-        let request = parse_from_reader(&mut input.as_bytes()).unwrap();
-
-        assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
-        assert_eq!("/", request.path);
-
-        assert_eq!(Some(&"value1".to_string()), request.header("Header-1"));
-        assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
-        assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
-
-        assert_eq!("This is the body", request.body_as_string());
     }
 }
