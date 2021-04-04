@@ -1,6 +1,7 @@
 use super::lex::{Lexer, Token};
 use super::{HttpMethod, HttpRequest, HttpRequestBuilder};
 use custom_error::custom_error;
+use lazy_static::lazy_static;
 use std::io::Read;
 use std::str::FromStr;
 
@@ -161,5 +162,56 @@ mod tests {
         assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
 
         assert_eq!("This is the body", request.body_as_string());
+    }
+
+    #[test]
+    fn parses_request_larger_than_1024_bytes() {
+        lazy_static! {
+            static ref INPUT: String = {
+                let mut input = String::from(
+                    "POST / HTTP/1.1\r\n\
+                Header-1: value1\r\n\
+                Header-2: value2\r\n\
+                Header-3: value3\r\n\
+                \r\n",
+                );
+                input.push_str(&"x".repeat(50000));
+                input
+            };
+        }
+
+        let request = parse_from_reader(Box::new(INPUT.as_bytes())).unwrap();
+
+        assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
+        assert_eq!("/", request.path);
+
+        assert_eq!(Some(&"value1".to_string()), request.header("Header-1"));
+        assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
+        assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
+
+        assert_eq!(50000, request.body_as_string().len());
+    }
+
+    #[test]
+    fn parses_large_header_value() {
+        lazy_static! {
+            static ref INPUT: String = {
+                let mut input = String::from(
+                    "POST / HTTP/1.1\r\n\
+                Header-1: ",
+                );
+                input.push_str(&"x".repeat(50000));
+                input.push_str("\r\nHeader-2: value2\r\n\r\n");
+                input
+            };
+        }
+
+        let request = parse_from_reader(Box::new(INPUT.as_bytes())).unwrap();
+
+        assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
+        assert_eq!("/", request.path);
+
+        assert_eq!(50000, request.header("Header-1").unwrap().len());
+        assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
     }
 }

@@ -36,27 +36,33 @@ pub struct Lexer {
     state: LexState,
     pos: usize,
     stream: Box<dyn Read>,
+    is_eof: bool,
 }
 impl Iterator for Lexer {
     type Item = Token;
 
     fn next(&mut self) -> Option<Token> {
-        if self.buffer.len() == 0 {
-            let mut buffer = [0; 1024];
-
-            let bytes_read = self.stream.read(&mut buffer).unwrap();
-            self.buffer = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
-        }
-
-        if self.pos >= self.buffer.len() {
+        if self.is_eof && self.pos >= self.buffer.len() {
             return None;
         }
 
         let (token, new_state) = match self.state {
-            LexState::RequestLine => self.lex_request_line(),
-            LexState::HeaderName => self.lex_header_name(),
-            LexState::HeaderValue => self.lex_header_value(),
-            LexState::Body => self.lex_body(),
+            LexState::RequestLine => {
+                self.fill_buffer_until_eol();
+                self.lex_request_line()
+            }
+            LexState::HeaderName => {
+                self.fill_buffer_until_eol();
+                self.lex_header_name()
+            }
+            LexState::HeaderValue => {
+                self.fill_buffer_until_eol();
+                self.lex_header_value()
+            }
+            LexState::Body => {
+                self.fill_buffer_until_eof();
+                self.lex_body()
+            }
         };
 
         if let Some(state) = new_state {
@@ -73,7 +79,43 @@ impl Lexer {
             state: LexState::RequestLine,
             pos: 0,
             stream: reader,
+            is_eof: false,
         }
+    }
+
+    fn fill_buffer_until_eol(&mut self) {
+        lazy_static! {
+            static ref CONTAINS_EOL_REGEX: Regex = Regex::new(r"\r\n").unwrap();
+        }
+        let mut contained_eol = false;
+        let mut eof = false;
+
+        while !contained_eol && !eof {
+            let mut buffer = [0; 1024];
+
+            let bytes_read = self.stream.read(&mut buffer).unwrap();
+            let buffer_str = &String::from_utf8_lossy(&buffer[..bytes_read]);
+            eof = bytes_read == 0;
+            contained_eol = CONTAINS_EOL_REGEX.find(buffer_str).is_some();
+            self.buffer.push_str(buffer_str);
+        }
+
+        self.is_eof = eof;
+    }
+
+    fn fill_buffer_until_eof(&mut self) {
+        let mut eof = false;
+
+        while !eof {
+            let mut buffer = [0; 1024];
+
+            let bytes_read = self.stream.read(&mut buffer).unwrap();
+            let buffer_str = &String::from_utf8_lossy(&buffer[..bytes_read]);
+            eof = bytes_read == 0;
+            self.buffer.push_str(buffer_str);
+        }
+
+        self.is_eof = true;
     }
 
     fn lex_body(&mut self) -> LexResult {
