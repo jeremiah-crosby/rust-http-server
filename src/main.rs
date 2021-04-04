@@ -38,7 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         if let Ok(mut stream) = listener.accept_request() {
-            let request = parse_from_reader(&mut stream).unwrap();
+            let request =
+                parse_from_reader(Box::new(stream.try_clone().expect("Stream clone failed")))
+                    .unwrap();
             debug!("Got request {:?}", &request);
             let response = handle_request(&request);
             debug!("Sending response {}", &response);
@@ -63,5 +65,5 @@ fn handle_request(request: &HttpRequest) -> String {
         );
     }
 
-    "HTTP/1.1 200 OK\r\n\r\n".to_string()
+    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n".to_string()
 }

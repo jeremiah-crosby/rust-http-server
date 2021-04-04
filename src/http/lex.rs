@@ -1,5 +1,5 @@
 use lazy_static::lazy_static;
-use log::debug;
+use log::trace;
 use std::io::Read;
 use std::str::FromStr;
 
@@ -35,11 +35,19 @@ pub struct Lexer {
     buffer: String,
     state: LexState,
     pos: usize,
+    stream: Box<dyn Read>,
 }
 impl Iterator for Lexer {
     type Item = Token;
 
     fn next(&mut self) -> Option<Token> {
+        if self.buffer.len() == 0 {
+            let mut buffer = [0; 1024];
+
+            let bytes_read = self.stream.read(&mut buffer).unwrap();
+            self.buffer = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+        }
+
         if self.pos >= self.buffer.len() {
             return None;
         }
@@ -59,21 +67,17 @@ impl Iterator for Lexer {
     }
 }
 impl Lexer {
-    pub fn new(reader: &mut dyn Read) -> Self {
-        let mut buffer = [0; 1024];
-
-        reader.read(&mut buffer).unwrap();
-        let source = String::from_utf8_lossy(&buffer[..]);
-
+    pub fn new(reader: Box<dyn Read>) -> Self {
         Lexer {
-            buffer: source.to_string(),
+            buffer: String::new(),
             state: LexState::RequestLine,
             pos: 0,
+            stream: reader,
         }
     }
 
     fn lex_body(&mut self) -> LexResult {
-        debug!("Lexing body");
+        trace!("Lexing body");
         let body_vec = self.buffer[self.pos..].as_bytes().to_vec();
         let body_len = body_vec.len();
         let body = (Token::Body(body_vec), None);
@@ -82,7 +86,7 @@ impl Lexer {
     }
 
     fn lex_header_name(&mut self) -> LexResult {
-        debug!("Lexing header name");
+        trace!("Lexing header name");
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c == '\r' {
@@ -113,7 +117,7 @@ impl Lexer {
     }
 
     fn lex_header_value(&mut self) -> LexResult {
-        debug!("Lexing header value");
+        trace!("Lexing header value");
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c != '\r' && c.is_whitespace() {
@@ -143,7 +147,7 @@ impl Lexer {
     }
 
     fn lex_end_headers(&mut self) -> LexResult {
-        debug!("Lexing end of headers");
+        trace!("Lexing end of headers");
         lazy_static! {
             static ref CRLF_RE: Regex = Regex::new(CRLF_REGEX_STR).unwrap();
         }
@@ -156,7 +160,7 @@ impl Lexer {
     }
 
     fn lex_request_line(&mut self) -> LexResult {
-        debug!("Lexing request line");
+        trace!("Lexing request line");
         match self.buffer.chars().nth(self.pos) {
             Some(c) => {
                 if c == '\r' {
@@ -183,7 +187,7 @@ impl Lexer {
     }
 
     fn lex_end_request_line(&mut self) -> LexResult {
-        debug!("Lexing end of request line");
+        trace!("Lexing end of request line");
         lazy_static! {
             static ref CRLF_RE: Regex = Regex::new(CRLF_REGEX_STR).unwrap();
         }
@@ -196,7 +200,7 @@ impl Lexer {
     }
 
     fn lex_path(&mut self) -> LexResult {
-        debug!("Lexing request path");
+        trace!("Lexing request path");
         lazy_static! {
             static ref PATH_RE: Regex = Regex::new(r"^[a-z0-9\-._~%!$&'()*+,;=:@/]+").unwrap();
         }
@@ -219,7 +223,7 @@ impl Lexer {
             static ref PROTOCOL_RE: Regex = Regex::new(r"^HTTP/1\.1").unwrap();
         }
         if let Some(mat) = (METHOD_RE).find(&self.buffer[self.pos..]) {
-            debug!("Lexing request method");
+            trace!("Lexing request method");
 
             let ret = (
                 Token::Method(
@@ -235,7 +239,7 @@ impl Lexer {
         }
 
         if let Some(mat) = (PROTOCOL_RE).find(&self.buffer[self.pos..]) {
-            debug!("Lexing request protocol and version");
+            trace!("Lexing request protocol and version");
 
             let ret = (Token::Protocol, None);
             self.pos += mat.end();
@@ -253,7 +257,7 @@ mod tests {
     #[test]
     fn lexes_valid_get_request_line() {
         let input = "GET / HTTP/1.1\r\nHeader-1: value\r\nAnother-Header: different value\r\n\r\n";
-        let mut lexer = Lexer::new(&mut input.as_bytes());
+        let mut lexer = Lexer::new(Box::new(input.as_bytes()));
 
         assert_eq!(
             Some(Token::Method(HttpMethod::from_str("GET").unwrap())),
@@ -286,7 +290,7 @@ mod tests {
     #[test]
     fn lexes_path_with_period() {
         let input = "GET /static/test.txt HTTP/1.1\r\nHeader-1: value\r\nAnother-Header: different value\r\n\r\n";
-        let mut lexer = Lexer::new(&mut input.as_bytes());
+        let mut lexer = Lexer::new(Box::new(input.as_bytes()));
 
         assert_eq!(
             Some(Token::Method(HttpMethod::from_str("GET").unwrap())),
