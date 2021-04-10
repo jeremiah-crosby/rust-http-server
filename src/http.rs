@@ -1,7 +1,7 @@
 mod lex;
 mod parse;
 
-pub use self::parse::parse_from_reader;
+pub use self::parse::{parse_from_reader, ParseError};
 
 use std::collections::HashMap;
 use std::str::FromStr;

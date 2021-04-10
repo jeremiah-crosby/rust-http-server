@@ -5,9 +5,10 @@ use lazy_static::lazy_static;
 use std::io::Read;
 use std::str::FromStr;
 
-custom_error! {pub ParseError
+custom_error! {#[derive(PartialEq)] pub ParseError
     Unexpected{msg: String} = "Unexpected token error: {msg}",
-    EarlyEof = "Unexpected EOF"
+    EarlyEof = "Unexpected EOF",
+    MaxHeaderSizeExceeded = "Max header size exceeded"
 }
 
 pub fn parse_from_reader(reader: Box<dyn Read>) -> Result<HttpRequest, ParseError> {
@@ -16,6 +17,7 @@ pub fn parse_from_reader(reader: Box<dyn Read>) -> Result<HttpRequest, ParseErro
     parse_header_lines(&mut lexer, &mut request_builder)?;
     parse_body(&mut lexer, &mut request_builder)?;
 
+    println!("returning");
     Ok(request_builder.build())
 }
 
@@ -40,6 +42,7 @@ where
                 msg: "Expected path".to_string(),
             })
         }
+        Some(Token::MaxHeaderSizeExceeded) => Err(ParseError::MaxHeaderSizeExceeded),
         Some(_) => Err(ParseError::Unexpected {
             msg: "Expected HTTP Method".to_string(),
         }),
@@ -59,15 +62,23 @@ where
             Some(Token::Crlf) => {
                 return Ok(());
             }
-            Some(Token::HeaderName(header_name)) => {
-                if let Some(Token::HeaderValue(header_val)) = token_iter.next() {
+            Some(Token::MaxHeaderSizeExceeded) => {
+                return Err(ParseError::MaxHeaderSizeExceeded);
+            }
+            Some(Token::HeaderName(header_name)) => match token_iter.next() {
+                Some(Token::HeaderValue(header_val)) => {
                     request_builder.with_header(header_name.as_str(), header_val.as_str());
                     return parse_header_lines(token_iter, request_builder);
                 }
-                return Err(ParseError::Unexpected {
-                    msg: "Expected header value".to_string(),
-                });
-            }
+                Some(Token::MaxHeaderSizeExceeded) => {
+                    return Err(ParseError::MaxHeaderSizeExceeded);
+                }
+                _ => {
+                    return Err(ParseError::Unexpected {
+                        msg: "Expected header value".to_string(),
+                    });
+                }
+            },
             _ => {
                 return Err(ParseError::Unexpected {
                     msg: "Expected header".to_string(),
@@ -102,6 +113,7 @@ where
 {
     match token_iter.next() {
         Some(Token::Protocol) => Ok(()),
+        Some(Token::MaxHeaderSizeExceeded) => Err(ParseError::MaxHeaderSizeExceeded),
         Some(_) => Err(ParseError::Unexpected {
             msg: "Expected protocol version".to_string(),
         }),
@@ -115,6 +127,7 @@ where
 {
     match token_iter.next() {
         Some(Token::Crlf) => Ok(()),
+        Some(Token::MaxHeaderSizeExceeded) => Err(ParseError::MaxHeaderSizeExceeded),
         Some(_) => Err(ParseError::Unexpected {
             msg: "Expected CRLF".to_string(),
         }),
@@ -187,6 +200,7 @@ mod tests {
                 Header-1: value1\r\n\
                 Header-2: value2\r\n\
                 Header-3: value3\r\n\
+                Content-Length: 50000\r\n\
                 \r\n",
                 );
                 input.push_str(&"x".repeat(50000));
@@ -207,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_large_header_value() {
+    fn large_header_value_returns_max_header_exceeded_error() {
         lazy_static! {
             static ref INPUT: String = {
                 let mut input = String::from(
@@ -220,12 +234,12 @@ mod tests {
             };
         }
 
-        let request = parse_from_reader(Box::new(INPUT.as_bytes())).unwrap();
+        let request = parse_from_reader(Box::new(INPUT.as_bytes()));
 
-        assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
-        assert_eq!("/", request.path);
-
-        assert_eq!(50000, request.header("Header-1").unwrap().len());
-        assert_eq!(Some(&"value2".to_string()), request.header("Header-2"));
+        if let Err(e) = request {
+            assert_eq!(ParseError::MaxHeaderSizeExceeded, e);
+        } else {
+            panic!("Expected error, got OK");
+        }
     }
 }
