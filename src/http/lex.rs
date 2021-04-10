@@ -37,6 +37,8 @@ pub struct Lexer {
     pos: usize,
     stream: Box<dyn Read>,
     is_eof: bool,
+    expecting_content_length: bool,
+    content_length: Option<usize>,
 }
 impl Iterator for Lexer {
     type Item = Token;
@@ -60,7 +62,7 @@ impl Iterator for Lexer {
                 self.lex_header_value()
             }
             LexState::Body => {
-                self.fill_buffer_until_eof();
+                self.fill_buffer_until_content_length_or_eof();
                 self.lex_body()
             }
         };
@@ -80,6 +82,8 @@ impl Lexer {
             pos: 0,
             stream: reader,
             is_eof: false,
+            expecting_content_length: false,
+            content_length: None,
         }
     }
 
@@ -103,16 +107,27 @@ impl Lexer {
         self.is_eof = eof;
     }
 
-    fn fill_buffer_until_eof(&mut self) {
+    fn fill_buffer_until_content_length_or_eof(&mut self) {
         let mut eof = false;
 
-        while !eof {
-            let mut buffer = [0; 1024];
+        if let Some(content_length) = self.content_length {
+            let mut buf = String::new();
 
-            let bytes_read = self.stream.read(&mut buffer).unwrap();
-            let buffer_str = &String::from_utf8_lossy(&buffer[..bytes_read]);
-            eof = bytes_read == 0;
-            self.buffer.push_str(buffer_str);
+            self.stream
+                .by_ref()
+                .take(content_length as u64)
+                .read_to_string(&mut buf)
+                .unwrap();
+            println!("self.buffer = {}", &self.buffer);
+            self.buffer.push_str(&buf);
+        } else {
+            while !eof {
+                let mut buffer = [0; 1024];
+                let bytes_read = self.stream.read(&mut buffer).unwrap();
+                let buffer_str = &String::from_utf8_lossy(&buffer[..bytes_read]);
+                eof = bytes_read == 0;
+                self.buffer.push_str(buffer_str);
+            }
         }
 
         self.is_eof = true;
@@ -120,7 +135,12 @@ impl Lexer {
 
     fn lex_body(&mut self) -> LexResult {
         trace!("Lexing body");
-        let body_vec = self.buffer[self.pos..].as_bytes().to_vec();
+        let body_vec = match self.content_length {
+            Some(content_length) => self.buffer[self.pos..self.pos + content_length]
+                .as_bytes()
+                .to_vec(),
+            _ => self.buffer[self.pos..].as_bytes().to_vec(),
+        };
         let body_len = body_vec.len();
         let body = (Token::Body(body_vec), None);
         self.pos += body_len;
@@ -141,14 +161,15 @@ impl Lexer {
                 }
 
                 if let Some(mat) = (FIELD_NAME_RE).find(&self.buffer[self.pos..]) {
+                    let header_name =
+                        self.buffer[self.pos + mat.start()..self.pos + mat.end() - 1].to_string();
                     let ret = (
-                        Token::HeaderName(
-                            self.buffer[self.pos + mat.start()..self.pos + mat.end() - 1]
-                                .to_string(),
-                        ),
+                        Token::HeaderName(header_name.clone()),
                         Some(LexState::HeaderValue),
                     );
                     self.pos += mat.end();
+
+                    self.expecting_content_length = header_name.to_lowercase() == "content-length";
                     return ret;
                 }
 
@@ -172,14 +193,21 @@ impl Lexer {
                 }
 
                 if let Some(mat) = (FIELD_VALUE_RE).find(&self.buffer[self.pos..]) {
+                    let header_value =
+                        self.buffer[self.pos + mat.start()..self.pos + mat.end() - 2].to_string();
                     let ret = (
-                        Token::HeaderValue(
-                            self.buffer[self.pos + mat.start()..self.pos + mat.end() - 2]
-                                .to_string(),
-                        ),
+                        Token::HeaderValue(header_value.clone()),
                         Some(LexState::HeaderName),
                     );
                     self.pos += mat.end();
+
+                    if self.expecting_content_length {
+                        self.expecting_content_length = false;
+                        if let Ok(content_length) = header_value.parse::<usize>() {
+                            self.content_length = Some(content_length);
+                        }
+                    }
+
                     return ret;
                 }
                 (Token::Error, None)

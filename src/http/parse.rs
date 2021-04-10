@@ -165,6 +165,20 @@ mod tests {
     }
 
     #[test]
+    fn only_reads_content_length_bytes_of_body_if_content_length_header_used() {
+        let input = "POST / HTTP/1.1\r\n\
+        Content-Length: 4\r\n\
+        \r\nThis is the body";
+
+        let request = parse_from_reader(Box::new(input.as_bytes())).unwrap();
+
+        assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
+        assert_eq!("/", request.path);
+
+        assert_eq!("This", request.body_as_string());
+    }
+
+    #[test]
     fn parses_request_larger_than_1024_bytes() {
         lazy_static! {
             static ref INPUT: String = {
