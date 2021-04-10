@@ -11,7 +11,7 @@ use log::{debug, info};
 use net::{RequestListener, TcpRequestListener};
 use std::{fs::read_to_string, io::Write, net::Shutdown, path::Path};
 
-use http::{parse_from_reader, HttpMethod, HttpRequest};
+use http::{parse_from_reader, HttpMethod, HttpRequest, ParseError};
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
@@ -38,11 +38,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         if let Ok(mut stream) = listener.accept_request() {
-            let request =
-                parse_from_reader(Box::new(stream.try_clone().expect("Stream clone failed")))
-                    .unwrap();
-            debug!("Got request {:?}", &request);
-            let response = handle_request(&request);
+            let response =
+                match parse_from_reader(Box::new(stream.try_clone().expect("Stream clone failed")))
+                {
+                    Ok(request) => {
+                        debug!("Got request {:?}", &request);
+                        handle_request(&request)
+                    }
+                    Err(ParseError::MaxHeaderSizeExceeded) => {
+                        "HTTP/1.1 413 Entity Too Large\r\n\r\n".to_owned()
+                    }
+                    _ => "HTTP/1.1 500 Internal Server Error\r\n\r\n".to_owned(),
+                };
+
             debug!("Sending response {}", &response);
             stream.write(&response.as_bytes())?;
             stream.shutdown(Shutdown::Both).expect("Could not shutdown");
