@@ -13,11 +13,8 @@ custom_error! {#[derive(PartialEq)] pub ParseError
 
 pub fn parse_from_reader(reader: Box<dyn Read>) -> Result<HttpRequest, ParseError> {
     let mut lexer = Lexer::new(reader);
-    println!("parsing request line");
     let mut request_builder = parse_request_line(&mut lexer)?;
-    println!("parsing headers");
     parse_header_lines(&mut lexer, &mut request_builder)?;
-    println!("parsing body");
     parse_body(&mut lexer, &mut request_builder)?;
 
     println!("returning");
@@ -203,6 +200,7 @@ mod tests {
                 Header-1: value1\r\n\
                 Header-2: value2\r\n\
                 Header-3: value3\r\n\
+                Content-Length: 50000\r\n\
                 \r\n",
                 );
                 input.push_str(&"x".repeat(50000));

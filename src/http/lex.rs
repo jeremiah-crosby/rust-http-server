@@ -32,6 +32,7 @@ enum LexState {
     HeaderName,
     HeaderValue,
     Body,
+    End,
 }
 
 pub struct Lexer {
@@ -53,7 +54,7 @@ impl Iterator for Lexer {
 
         let (token, new_state) = match self.state {
             LexState::Initial => {
-                self.fill_buffer_until_max_header_size();
+                self.refill_buffer();
                 self.state = LexState::RequestLine;
                 self.lex_request_line()
             }
@@ -79,6 +80,7 @@ impl Iterator for Lexer {
                 self.fill_buffer_until_content_length_or_eof();
                 self.lex_body()
             }
+            LexState::End => return None,
         };
 
         if let Some(state) = new_state {
@@ -105,6 +107,14 @@ impl Lexer {
         self.pos > MAX_HEADER_SIZE
     }
 
+    fn refill_buffer(&mut self) {
+        let mut buffer = [0; 1024];
+        let bytes_read = self.stream.read(&mut buffer).unwrap();
+        let buffer_str = &String::from_utf8_lossy(&buffer[..bytes_read]);
+        self.is_eof = bytes_read == 0;
+        self.buffer.push_str(buffer_str);
+    }
+
     fn fill_buffer_until_max_header_size(&mut self) {
         let mut buf = String::new();
 
@@ -117,6 +127,10 @@ impl Lexer {
     }
 
     fn fill_buffer_until_content_length_or_eof(&mut self) {
+        if self.is_eof || self.content_length.is_none() {
+            return;
+        }
+
         let mut eof = false;
 
         if let Some(content_length) = self.content_length {
@@ -150,7 +164,7 @@ impl Lexer {
             _ => self.buffer[self.pos..].as_bytes().to_vec(),
         };
         let body_len = body_vec.len();
-        let body = (Token::Body(body_vec), None);
+        let body = (Token::Body(body_vec), Some(LexState::End));
         self.pos += body_len;
         body
     }
@@ -185,7 +199,10 @@ impl Lexer {
 
                     return (Token::Error, None);
                 }
-                None => return (Token::MaxHeaderSizeExceeded, None),
+                None => {
+                    self.refill_buffer();
+                    continue;
+                }
             }
         }
     }
@@ -217,7 +234,8 @@ impl Lexer {
                     return (Token::Error, None);
                 }
                 None => {
-                    return (Token::MaxHeaderSizeExceeded, None);
+                    self.refill_buffer();
+                    continue;
                 }
             }
         }
