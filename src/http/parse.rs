@@ -2,8 +2,8 @@ use super::lex::{Lexer, Token};
 use super::{HttpMethod, HttpRequest, HttpRequestBuilder};
 use custom_error::custom_error;
 use lazy_static::lazy_static;
-use std::io::Read;
 use std::str::FromStr;
+use tokio::io::AsyncReadExt;
 
 custom_error! {#[derive(PartialEq)] pub ParseError
     Unexpected{msg: String} = "Unexpected token error: {msg}",
@@ -11,25 +11,33 @@ custom_error! {#[derive(PartialEq)] pub ParseError
     MaxHeaderSizeExceeded = "Max header size exceeded"
 }
 
-pub fn parse_from_reader(reader: Box<dyn Read>) -> Result<HttpRequest, ParseError> {
+pub async fn parse_from_reader<T>(reader: &mut T) -> Result<HttpRequest, ParseError>
+where
+    T: AsyncReadExt + Unpin,
+{
     let mut lexer = Lexer::new(reader);
-    let mut request_builder = parse_request_line(&mut lexer)?;
-    parse_header_lines(&mut lexer, &mut request_builder)?;
-    parse_body(&mut lexer, &mut request_builder)?;
+    let mut request_builder = parse_request_line(&mut lexer).await?;
+    let mut parsing_headers = true;
 
-    println!("returning");
+    while parsing_headers {
+        parsing_headers = parse_header_lines(&mut lexer, &mut request_builder).await?;
+    }
+    parse_body(&mut lexer, &mut request_builder).await?;
+
     Ok(request_builder.build())
 }
 
-fn parse_request_line<I>(token_iter: &mut I) -> Result<HttpRequestBuilder, ParseError>
+async fn parse_request_line<'a, T>(
+    token_iter: &mut Lexer<'a, T>,
+) -> Result<HttpRequestBuilder, ParseError>
 where
-    I: Iterator<Item = Token>,
+    T: AsyncReadExt + Unpin,
 {
-    match token_iter.next() {
+    match token_iter.next().await {
         Some(Token::Method(method)) => {
-            if let Some(Token::Path(path)) = token_iter.next() {
-                parse_protocol(token_iter)?;
-                parse_crlf(token_iter)?;
+            if let Some(Token::Path(path)) = token_iter.next().await {
+                parse_protocol(token_iter).await?;
+                parse_crlf(token_iter).await?;
 
                 let mut builder = HttpRequestBuilder::new();
                 builder.with_method(method);
@@ -50,25 +58,25 @@ where
     }
 }
 
-fn parse_header_lines<I>(
-    token_iter: &mut I,
+async fn parse_header_lines<'a, T>(
+    token_iter: &mut Lexer<'a, T>,
     request_builder: &mut HttpRequestBuilder,
-) -> Result<(), ParseError>
+) -> Result<bool, ParseError>
 where
-    I: Iterator<Item = Token>,
+    T: AsyncReadExt + Unpin,
 {
     loop {
-        match token_iter.next() {
+        match token_iter.next().await {
             Some(Token::Crlf) => {
-                return Ok(());
+                return Ok(false);
             }
             Some(Token::MaxHeaderSizeExceeded) => {
                 return Err(ParseError::MaxHeaderSizeExceeded);
             }
-            Some(Token::HeaderName(header_name)) => match token_iter.next() {
+            Some(Token::HeaderName(header_name)) => match token_iter.next().await {
                 Some(Token::HeaderValue(header_val)) => {
                     request_builder.with_header(header_name.as_str(), header_val.as_str());
-                    return parse_header_lines(token_iter, request_builder);
+                    return Ok(true);
                 }
                 Some(Token::MaxHeaderSizeExceeded) => {
                     return Err(ParseError::MaxHeaderSizeExceeded);
@@ -88,14 +96,14 @@ where
     }
 }
 
-fn parse_body<I>(
-    token_iter: &mut I,
+async fn parse_body<'a, T>(
+    token_iter: &mut Lexer<'a, T>,
     request_builder: &mut HttpRequestBuilder,
 ) -> Result<(), ParseError>
 where
-    I: Iterator<Item = Token>,
+    T: AsyncReadExt + Unpin,
 {
-    match token_iter.next() {
+    match token_iter.next().await {
         Some(Token::Body(ref content)) => {
             request_builder.with_body(content);
             Ok(())
@@ -107,11 +115,11 @@ where
     }
 }
 
-fn parse_protocol<I>(token_iter: &mut I) -> Result<(), ParseError>
+async fn parse_protocol<'a, T>(token_iter: &mut Lexer<'a, T>) -> Result<(), ParseError>
 where
-    I: Iterator<Item = Token>,
+    T: AsyncReadExt + Unpin,
 {
-    match token_iter.next() {
+    match token_iter.next().await {
         Some(Token::Protocol) => Ok(()),
         Some(Token::MaxHeaderSizeExceeded) => Err(ParseError::MaxHeaderSizeExceeded),
         Some(_) => Err(ParseError::Unexpected {
@@ -121,11 +129,11 @@ where
     }
 }
 
-fn parse_crlf<I>(token_iter: &mut I) -> Result<(), ParseError>
+async fn parse_crlf<'a, T>(token_iter: &mut Lexer<'a, T>) -> Result<(), ParseError>
 where
-    I: Iterator<Item = Token>,
+    T: AsyncReadExt + Unpin,
 {
-    match token_iter.next() {
+    match token_iter.next().await {
         Some(Token::Crlf) => Ok(()),
         Some(Token::MaxHeaderSizeExceeded) => Err(ParseError::MaxHeaderSizeExceeded),
         Some(_) => Err(ParseError::Unexpected {
@@ -139,15 +147,15 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_simple_valid_get_request() {
-        let input = "GET / HTTP/1.1\r\n\
+    #[tokio::test]
+    async fn parses_simple_valid_get_request() {
+        let mut input = "GET / HTTP/1.1\r\n\
         Header-1: value1\r\n\
         Header-2: value2\r\n\
         Header-3: value3\r\n\
         \r\n";
 
-        let request = parse_from_reader(Box::new(input.as_bytes())).unwrap();
+        let request = (parse_from_reader(&mut input.as_bytes()).await).unwrap();
 
         assert_eq!(HttpMethod::from_str("GET").unwrap(), request.method);
         assert_eq!("/", request.path);
@@ -157,15 +165,15 @@ mod tests {
         assert_eq!(Some(&"value3".to_string()), request.header("Header-3"));
     }
 
-    #[test]
-    fn parses_simple_valid_post_request_with_body() {
-        let input = "POST / HTTP/1.1\r\n\
+    #[tokio::test]
+    async fn parses_simple_valid_post_request_with_body() {
+        let mut input = "POST / HTTP/1.1\r\n\
         Header-1: value1\r\n\
         Header-2: value2\r\n\
         Header-3: value3\r\n\
         \r\nThis is the body";
 
-        let request = parse_from_reader(Box::new(input.as_bytes())).unwrap();
+        let request = (parse_from_reader(&mut input.as_bytes()).await).unwrap();
 
         assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
         assert_eq!("/", request.path);
@@ -177,13 +185,13 @@ mod tests {
         assert_eq!("This is the body", request.body_as_string());
     }
 
-    #[test]
-    fn only_reads_content_length_bytes_of_body_if_content_length_header_used() {
-        let input = "POST / HTTP/1.1\r\n\
+    #[tokio::test]
+    async fn only_reads_content_length_bytes_of_body_if_content_length_header_used() {
+        let mut input = "POST / HTTP/1.1\r\n\
         Content-Length: 4\r\n\
         \r\nThis is the body";
 
-        let request = parse_from_reader(Box::new(input.as_bytes())).unwrap();
+        let request = (parse_from_reader(&mut input.as_bytes()).await).unwrap();
 
         assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
         assert_eq!("/", request.path);
@@ -191,8 +199,8 @@ mod tests {
         assert_eq!("This", request.body_as_string());
     }
 
-    #[test]
-    fn parses_request_larger_than_1024_bytes() {
+    #[tokio::test]
+    async fn parses_request_larger_than_1024_bytes() {
         lazy_static! {
             static ref INPUT: String = {
                 let mut input = String::from(
@@ -208,7 +216,7 @@ mod tests {
             };
         }
 
-        let request = parse_from_reader(Box::new(INPUT.as_bytes())).unwrap();
+        let request = (parse_from_reader(&mut INPUT.as_bytes()).await).unwrap();
 
         assert_eq!(HttpMethod::from_str("POST").unwrap(), request.method);
         assert_eq!("/", request.path);
@@ -220,8 +228,8 @@ mod tests {
         assert_eq!(50000, request.body_as_string().len());
     }
 
-    #[test]
-    fn large_header_value_returns_max_header_exceeded_error() {
+    #[tokio::test]
+    async fn large_header_value_returns_max_header_exceeded_error() {
         lazy_static! {
             static ref INPUT: String = {
                 let mut input = String::from(
@@ -234,7 +242,7 @@ mod tests {
             };
         }
 
-        let request = parse_from_reader(Box::new(INPUT.as_bytes()));
+        let request = parse_from_reader(&mut INPUT.as_bytes()).await;
 
         if let Err(e) = request {
             assert_eq!(ParseError::MaxHeaderSizeExceeded, e);

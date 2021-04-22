@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use log::trace;
-use std::io::Read;
 use std::str::FromStr;
+use tokio::io::AsyncReadExt;
 
 use super::HttpMethod;
 
@@ -35,26 +35,43 @@ enum LexState {
     End,
 }
 
-pub struct Lexer {
+pub struct Lexer<'a, T>
+where
+    T: AsyncReadExt + Unpin,
+{
     buffer: String,
     state: LexState,
     pos: usize,
-    stream: Box<dyn Read>,
+    stream: &'a mut T,
     is_eof: bool,
     expecting_content_length: bool,
     content_length: Option<usize>,
 }
-impl Iterator for Lexer {
-    type Item = Token;
 
-    fn next(&mut self) -> Option<Token> {
+impl<'a, T> Lexer<'a, T>
+where
+    T: AsyncReadExt + Unpin,
+{
+    pub fn new(reader: &'a mut T) -> Self {
+        Lexer {
+            buffer: String::new(),
+            state: LexState::Initial,
+            pos: 0,
+            stream: reader,
+            is_eof: false,
+            expecting_content_length: false,
+            content_length: None,
+        }
+    }
+
+    pub async fn next(&mut self) -> Option<Token> {
         if self.is_eof && self.pos >= self.buffer.len() {
             return None;
         }
 
         let (token, new_state) = match self.state {
             LexState::Initial => {
-                self.refill_buffer();
+                self.refill_buffer().await;
                 self.state = LexState::RequestLine;
                 self.lex_request_line()
             }
@@ -68,16 +85,16 @@ impl Iterator for Lexer {
                 if self.header_size_exceeded() {
                     return Some(Token::MaxHeaderSizeExceeded);
                 }
-                self.lex_header_name()
+                self.lex_header_name().await
             }
             LexState::HeaderValue => {
                 if self.header_size_exceeded() {
                     return Some(Token::MaxHeaderSizeExceeded);
                 }
-                self.lex_header_value()
+                self.lex_header_value().await
             }
             LexState::Body => {
-                self.fill_buffer_until_content_length_or_eof();
+                self.fill_buffer_until_content_length_or_eof().await;
                 self.lex_body()
             }
             LexState::End => return None,
@@ -89,44 +106,30 @@ impl Iterator for Lexer {
 
         Some(token)
     }
-}
-impl Lexer {
-    pub fn new(reader: Box<dyn Read>) -> Self {
-        Lexer {
-            buffer: String::new(),
-            state: LexState::Initial,
-            pos: 0,
-            stream: reader,
-            is_eof: false,
-            expecting_content_length: false,
-            content_length: None,
-        }
-    }
 
     fn header_size_exceeded(&self) -> bool {
         self.pos > MAX_HEADER_SIZE
     }
 
-    fn refill_buffer(&mut self) {
+    async fn refill_buffer(&mut self) {
         let mut buffer = [0; 1024];
-        let bytes_read = self.stream.read(&mut buffer).unwrap();
+        let bytes_read = (self.stream.read(&mut buffer).await).unwrap();
         let buffer_str = &String::from_utf8_lossy(&buffer[..bytes_read]);
         self.is_eof = bytes_read == 0;
         self.buffer.push_str(buffer_str);
     }
 
-    fn fill_buffer_until_max_header_size(&mut self) {
+    async fn fill_buffer_until_max_header_size(&mut self) {
         let mut buf = String::new();
 
         self.stream
-            .by_ref()
             .take(MAX_HEADER_SIZE as u64)
             .read_to_string(&mut buf)
-            .unwrap();
+            .await;
         self.buffer.push_str(&buf);
     }
 
-    fn fill_buffer_until_content_length_or_eof(&mut self) {
+    async fn fill_buffer_until_content_length_or_eof(&mut self) {
         if self.is_eof || self.content_length.is_none() {
             return;
         }
@@ -137,15 +140,14 @@ impl Lexer {
             let mut buf = String::new();
 
             self.stream
-                .by_ref()
                 .take(content_length as u64)
                 .read_to_string(&mut buf)
-                .unwrap();
+                .await;
             self.buffer.push_str(&buf);
         } else {
             while !eof {
                 let mut buffer = [0; 1024];
-                let bytes_read = self.stream.read(&mut buffer).unwrap();
+                let bytes_read = (self.stream.read(&mut buffer).await).unwrap();
                 let buffer_str = &String::from_utf8_lossy(&buffer[..bytes_read]);
                 eof = bytes_read == 0;
                 self.buffer.push_str(buffer_str);
@@ -169,7 +171,7 @@ impl Lexer {
         body
     }
 
-    fn lex_header_name(&mut self) -> LexResult {
+    async fn lex_header_name(&mut self) -> LexResult {
         trace!("Lexing header name");
         if self.buffer.chars().nth(self.pos) == Some('\r') {
             return self.lex_end_headers();
@@ -200,7 +202,7 @@ impl Lexer {
                     return (Token::Error, None);
                 }
                 None => {
-                    self.refill_buffer();
+                    self.refill_buffer().await;
                     continue;
                 }
             }
@@ -211,7 +213,7 @@ impl Lexer {
         c.is_alphanumeric() || c == '-'
     }
 
-    fn lex_header_value(&mut self) -> LexResult {
+    async fn lex_header_value(&mut self) -> LexResult {
         trace!("Lexing header value");
         let start_pos = self.pos;
         loop {
@@ -234,7 +236,7 @@ impl Lexer {
                     return (Token::Error, None);
                 }
                 None => {
-                    self.refill_buffer();
+                    self.refill_buffer().await;
                     continue;
                 }
             }
@@ -374,73 +376,81 @@ impl Lexer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn lexes_valid_get_request_line() {
+    #[tokio::test]
+    async fn lexes_valid_get_request_line() {
         let input = "GET / HTTP/1.1\r\nHeader-1: value\r\nAnother-Header: different value\r\n\r\n";
-        let mut lexer = Lexer::new(Box::new(input.as_bytes()));
+        let mut bytes = input.as_bytes();
+        let mut lexer = Lexer::new(&mut bytes);
 
         assert_eq!(
             Some(Token::Method(HttpMethod::from_str("GET").unwrap())),
-            lexer.next()
+            lexer.next().await
         );
-        assert_eq!(Some(Token::Path("/".to_string())), lexer.next());
-        assert_eq!(Some(Token::Protocol), lexer.next());
-        assert_eq!(Some(Token::Crlf), lexer.next());
+        assert_eq!(Some(Token::Path("/".to_string())), lexer.next().await);
+        assert_eq!(Some(Token::Protocol), lexer.next().await);
+        assert_eq!(Some(Token::Crlf), lexer.next().await);
 
         assert_eq!(
             Some(Token::HeaderName("Header-1".to_string())),
-            lexer.next()
+            lexer.next().await
         );
-        assert_eq!(Some(Token::HeaderValue("value".to_string())), lexer.next());
+        assert_eq!(
+            Some(Token::HeaderValue("value".to_string())),
+            lexer.next().await
+        );
 
         assert_eq!(
             Some(Token::HeaderName("Another-Header".to_string())),
-            lexer.next()
+            lexer.next().await
         );
         assert_eq!(
             Some(Token::HeaderValue("different value".to_string())),
-            lexer.next()
+            lexer.next().await
         );
-        assert_eq!(Some(Token::Crlf), lexer.next());
+        assert_eq!(Some(Token::Crlf), lexer.next().await);
 
-        lexer.next();
-        assert_eq!(None, lexer.next());
+        lexer.next().await;
+        assert_eq!(None, lexer.next().await);
     }
 
-    #[test]
-    fn lexes_path_with_period() {
+    #[tokio::test]
+    async fn lexes_path_with_period() {
         let input = "GET /static/test.txt HTTP/1.1\r\nHeader-1: value\r\nAnother-Header: different value\r\n\r\n";
-        let mut lexer = Lexer::new(Box::new(input.as_bytes()));
+        let mut bytes = input.as_bytes();
+        let mut lexer = Lexer::new(&mut bytes);
 
         assert_eq!(
             Some(Token::Method(HttpMethod::from_str("GET").unwrap())),
-            lexer.next()
+            lexer.next().await
         );
         assert_eq!(
             Some(Token::Path("/static/test.txt".to_string())),
-            lexer.next()
+            lexer.next().await
         );
-        assert_eq!(Some(Token::Protocol), lexer.next());
-        assert_eq!(Some(Token::Crlf), lexer.next());
+        assert_eq!(Some(Token::Protocol), lexer.next().await);
+        assert_eq!(Some(Token::Crlf), lexer.next().await);
 
         assert_eq!(
             Some(Token::HeaderName("Header-1".to_string())),
-            lexer.next()
+            lexer.next().await
         );
-        assert_eq!(Some(Token::HeaderValue("value".to_string())), lexer.next());
+        assert_eq!(
+            Some(Token::HeaderValue("value".to_string())),
+            lexer.next().await
+        );
 
         assert_eq!(
             Some(Token::HeaderName("Another-Header".to_string())),
-            lexer.next()
+            lexer.next().await
         );
         assert_eq!(
             Some(Token::HeaderValue("different value".to_string())),
-            lexer.next()
+            lexer.next().await
         );
-        assert_eq!(Some(Token::Crlf), lexer.next());
+        assert_eq!(Some(Token::Crlf), lexer.next().await);
 
-        lexer.next();
+        lexer.next().await;
 
-        assert_eq!(None, lexer.next());
+        assert_eq!(None, lexer.next().await);
     }
 }

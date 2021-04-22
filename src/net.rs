@@ -1,16 +1,11 @@
 use custom_error::custom_error;
 use log::debug;
 use std::io::Read;
-use std::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 
 custom_error! {pub NetError
     NotOpened = "TCP stream used before opened",
     IoError{source: std::io::Error} = "I/O Error: {}"
-}
-
-pub trait RequestListener {
-    fn open(&mut self) -> Result<(), NetError>;
-    fn accept_request(&self) -> Result<TcpStream, NetError>;
 }
 
 pub struct TcpRequestListener {
@@ -27,11 +22,9 @@ impl TcpRequestListener {
             listener: None,
         }
     }
-}
 
-impl RequestListener for TcpRequestListener {
-    fn open(&mut self) -> Result<(), NetError> {
-        match TcpListener::bind(format!("{}:{}", self.address, self.port)) {
+    pub async fn open(&mut self) -> Result<(), NetError> {
+        match TcpListener::bind(format!("{}:{}", self.address, self.port)).await {
             Ok(opened) => {
                 self.listener = Some(opened);
                 return Ok(());
@@ -40,9 +33,9 @@ impl RequestListener for TcpRequestListener {
         }
     }
 
-    fn accept_request(&self) -> Result<TcpStream, NetError> {
+    pub async fn accept_request(&self) -> Result<TcpStream, NetError> {
         if let Some(ref listener) = self.listener {
-            match listener.accept() {
+            match listener.accept().await {
                 Ok((stream, _)) => {
                     debug!("Connection established");
                     Ok(stream)
