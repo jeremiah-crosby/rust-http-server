@@ -8,8 +8,9 @@ mod net;
 use clap::Clap;
 use flexi_logger::Logger;
 use log::{debug, info};
-use net::{RequestListener, TcpRequestListener};
+use net::TcpRequestListener;
 use std::{fs::read_to_string, io::Write, net::Shutdown, path::Path};
+use tokio::io::AsyncWriteExt;
 
 use http::{parse_from_reader, HttpMethod, HttpRequest, ParseError};
 
@@ -27,33 +28,32 @@ struct Opts {
 }
 
 #[allow(unreachable_code)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::with_env_or_str("debug").start()?;
 
     let opts: Opts = Opts::parse();
 
     info!("Binding to {}:{}", &opts.bind_address, opts.port);
     let mut listener = TcpRequestListener::new(&opts.bind_address, opts.port);
-    listener.open()?;
+    listener.open().await?;
 
     loop {
-        if let Ok(mut stream) = listener.accept_request() {
-            let response =
-                match parse_from_reader(Box::new(stream.try_clone().expect("Stream clone failed")))
-                {
-                    Ok(request) => {
-                        debug!("Got request {:?}", &request);
-                        handle_request(&request)
-                    }
-                    Err(ParseError::MaxHeaderSizeExceeded) => {
-                        "HTTP/1.1 413 Entity Too Large\r\n\r\n".to_owned()
-                    }
-                    _ => "HTTP/1.1 500 Internal Server Error\r\n\r\n".to_owned(),
-                };
+        if let Ok(mut stream) = listener.accept_request().await {
+            let (mut read_half, mut write_half) = stream.split();
+            let response = match parse_from_reader(&mut read_half).await {
+                Ok(request) => {
+                    debug!("Got request {:?}", &request);
+                    handle_request(&request)
+                }
+                Err(ParseError::MaxHeaderSizeExceeded) => {
+                    "HTTP/1.1 413 Entity Too Large\r\n\r\n".to_owned()
+                }
+                _ => "HTTP/1.1 500 Internal Server Error\r\n\r\n".to_owned(),
+            };
 
             debug!("Sending response {}", &response);
-            stream.write(&response.as_bytes())?;
-            stream.shutdown(Shutdown::Both).expect("Could not shutdown");
+            write_half.write(&response.as_bytes()).await?;
         }
     }
 
