@@ -1,8 +1,6 @@
 use super::lex::{Lexer, Token};
-use super::{HttpMethod, HttpRequest, HttpRequestBuilder};
+use super::{HttpRequest, HttpRequestBuilder};
 use custom_error::custom_error;
-use lazy_static::lazy_static;
-use std::str::FromStr;
 use tokio::io::AsyncReadExt;
 
 custom_error! {#[derive(PartialEq)] pub ParseError
@@ -145,11 +143,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::HttpMethod, *};
+    use lazy_static::lazy_static;
+    use std::str::FromStr;
 
     #[tokio::test]
     async fn parses_simple_valid_get_request() {
-        let mut input = "GET / HTTP/1.1\r\n\
+        let input = "GET / HTTP/1.1\r\n\
         Header-1: value1\r\n\
         Header-2: value2\r\n\
         Header-3: value3\r\n\
@@ -167,7 +167,7 @@ mod tests {
 
     #[tokio::test]
     async fn parses_simple_valid_post_request_with_body() {
-        let mut input = "POST / HTTP/1.1\r\n\
+        let input = "POST / HTTP/1.1\r\n\
         Header-1: value1\r\n\
         Header-2: value2\r\n\
         Header-3: value3\r\n\
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_reads_content_length_bytes_of_body_if_content_length_header_used() {
-        let mut input = "POST / HTTP/1.1\r\n\
+        let input = "POST / HTTP/1.1\r\n\
         Content-Length: 4\r\n\
         \r\nThis is the body";
 

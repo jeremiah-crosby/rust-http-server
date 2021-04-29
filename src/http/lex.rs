@@ -125,7 +125,8 @@ where
         self.stream
             .take(MAX_HEADER_SIZE as u64)
             .read_to_string(&mut buf)
-            .await;
+            .await
+            .expect("Could not read");
         self.buffer.push_str(&buf);
     }
 
@@ -142,7 +143,8 @@ where
             self.stream
                 .take(content_length as u64)
                 .read_to_string(&mut buf)
-                .await;
+                .await
+                .expect("Could not read");
             self.buffer.push_str(&buf);
         } else {
             while !eof {

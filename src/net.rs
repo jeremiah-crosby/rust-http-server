@@ -1,6 +1,5 @@
 use custom_error::custom_error;
 use log::debug;
-use std::io::Read;
 use tokio::net::{TcpListener, TcpStream};
 
 custom_error! {pub NetError

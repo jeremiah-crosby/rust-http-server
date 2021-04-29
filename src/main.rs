@@ -9,7 +9,7 @@ use clap::Clap;
 use flexi_logger::Logger;
 use log::{debug, info};
 use net::TcpRequestListener;
-use std::{fs::read_to_string, io::Write, net::Shutdown, path::Path};
+use std::{fs::read_to_string, path::Path};
 use tokio::io::AsyncWriteExt;
 
 use http::{parse_from_reader, HttpMethod, HttpRequest, ParseError};
