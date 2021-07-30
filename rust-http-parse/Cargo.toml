@@ -1,7 +1,6 @@
 [package]
-name = "rust-http-server"
+name = "rust-http-parse"
 version = "0.1.0"
-authors = ["Jeremiah <jeremiahcrosby@gmail.com>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -15,4 +14,3 @@ lazy_static = "1.4.0"
 log = "0.4.14"
 flexi_logger = "0.17.1"
 tokio = { version = "1.5.0", features = ["full"] }
-rust-http-parse = {path = "rust-http-parse"}
