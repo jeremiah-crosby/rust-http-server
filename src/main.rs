@@ -2,7 +2,6 @@
 
 extern crate custom_error;
 
-mod http;
 mod net;
 
 use clap::Clap;
@@ -12,7 +11,7 @@ use net::TcpRequestListener;
 use std::{fs::read_to_string, path::Path};
 use tokio::io::AsyncWriteExt;
 
-use http::{parse_from_reader, HttpMethod, HttpRequest, ParseError};
+use rust_http_parse::{parse_from_reader, HttpMethod, HttpRequest, ParseError};
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
